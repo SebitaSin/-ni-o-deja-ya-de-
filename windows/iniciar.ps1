@@ -3,6 +3,11 @@
 # Si la app ya está abierta, solo abre otra ventana.
 
 $ErrorActionPreference = 'Stop'
+$Log = Join-Path $PSScriptRoot 'iniciar.log'
+function Write-Log($t) { try { Add-Content -LiteralPath $Log -Value ('{0}  {1}' -f (Get-Date -Format o), $t) } catch { } }
+trap { Write-Log ('ERROR: ' + $_.Exception.Message); continue }
+Write-Log 'inicio'
+
 $Root = Split-Path -Parent $PSScriptRoot
 $Port = 8765
 $Url  = "http://localhost:$Port/"
@@ -39,6 +44,7 @@ catch {
   exit 1
 }
 
+Write-Log 'servidor escuchando en el puerto 8765'
 Open-AppWindow
 
 # Busca la versión nueva en GitHub en segundo plano (como mucho una vez por hora)
