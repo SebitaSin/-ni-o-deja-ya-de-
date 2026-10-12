@@ -19,6 +19,17 @@ Al abrirla por primera vez (también al abrir la versión instalada) pide la **u
 - La ubicación en tiempo real funciona con la app abierta. Con la app cerrada vigila el **vigía** (abajo), que revisa tus puntos guardados.
 - Calle Day 1532 está sobre la calle verificada, pero la altura no figura en OpenStreetMap. Fijala con el botón "Estoy acá".
 
+## En la PC con Windows (ícono en el escritorio)
+
+La carpeta `windows/` trae el lanzador. El ícono del escritorio ejecuta `windows/iniciar.ps1`, que:
+
+1. Sirve la app solo en esta PC, en `http://localhost:8765` (la ubicación y el modo sin conexión necesitan una dirección así).
+2. La abre en una ventana propia de Chrome o Edge, sin barra de navegador.
+3. Trae en segundo plano la última versión publicada en GitHub (app y datos del vigía), como mucho una vez por hora.
+4. Se apaga solo después de 3 horas sin uso.
+
+Para la ubicación en la PC, Windows tiene que tener activado *Configuración → Privacidad → Ubicación*.
+
 ## Publicarla (gratis)
 
 1. Creá un repositorio en GitHub y subí todos estos archivos (también la carpeta oculta `.github`).
