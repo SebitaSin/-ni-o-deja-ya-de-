@@ -286,8 +286,13 @@ async function refreshMountain(force = false) {
 async function refreshServer(force = false) {
   if (!force && Date.now() - S.at.server < REFRESH.server) return;
   S.at.server = Date.now();
+  // primero la copia publicada junto a la app; si no está (app abierta desde la PC), la del repositorio
+  const REMOTE = 'https://raw.githubusercontent.com/SebitaSin/-ni-o-deja-ya-de-/main/data/';
   const get = async (f) => {
-    try { const r = await fetch(`data/${f}?t=${Date.now()}`, { cache: 'no-store' }); return r.ok ? await r.json() : null; } catch { return null; }
+    for (const base of ['data/', REMOTE]) {
+      try { const r = await fetch(`${base}${f}?t=${Date.now()}`, { cache: 'no-store' }); if (r.ok) return await r.json(); } catch { /* sigue */ }
+    }
+    return null;
   };
   const [estado, smn, enso, verif] = await Promise.all([get('estado.json'), get('smn_alertas.json'), get('enso.json'), get('verificacion.json')]);
   S.server = { estado, smn, enso, verif };
