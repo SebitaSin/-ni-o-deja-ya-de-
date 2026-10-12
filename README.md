@@ -11,6 +11,18 @@ App para celular y PC que vigila el tiempo, los ríos y la cordillera para San R
 
 Al abrirla por primera vez (también al abrir la versión instalada) pide la **ubicación en tiempo real**. Trae 28 puntos cargados con su fuente: tus 3 direcciones, el Hospital Schestakow, 17 distritos, embalses y nacientes.
 
+## Mediciones en tiempo real que usa
+
+| Qué | Fuente | Frecuencia | Cómo llega |
+| --- | --- | --- | --- |
+| Lluvia medida (última hora, 24 h) | Pluviómetros de la telemetría pública de Irrigación | 1 a 15 min | App directo + historia del vigía |
+| Caudal y escala de ríos y diques (Atuel, Salado, Diamante en Galileo Vitali) | Telemetría de Irrigación | 1 a 15 min | App directo + historia del vigía |
+| Toma de agua potable de la ciudad (AySAM Ballofet) | Telemetría de Irrigación | 1 a 15 min | App directo |
+| Tormentas, granizo probable y hacia dónde van | Radar de Contingencias Climáticas (imagen y animación) | varias veces por hora | App directo |
+| Tiempo presente, lluvia informada, granizo observado | San Rafael Aero: METAR (aviationweather.gov) y SYNOP (OGIMET) | horaria | Vigía |
+| Alertas oficiales | SMN, feed CAP | al emitirse | Vigía |
+| Anegamientos, crecidas, cortes de luz o agua | Noticias y prensa oficial filtradas | al publicarse | Vigía (son reportes, no mediciones) |
+
 ## Límites que conviene saber
 
 - Los niveles son **avisos preventivos calculados**, no alertas oficiales. Las alertas del SMN aparecen aparte, con su sello.

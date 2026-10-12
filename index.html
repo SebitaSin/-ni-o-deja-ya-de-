@@ -37,6 +37,8 @@
       <p id="verdictText" class="verdict-text">Consultando modelos…</p>
       <p id="verdictMeta" class="verdict-meta"></p>
     </div>
+    <div id="live" class="live"></div>
+    <h2 class="sec">Pronóstico por amenaza, próximas 72 h</h2>
     <div id="hazards" class="hazards"></div>
 
     <h2 class="sec">Lluvia hora por hora, próximas 72 h</h2>
@@ -58,17 +60,21 @@
   <!-- 2 · MAPA -->
   <section id="tab-mapa" class="tab" hidden aria-labelledby="nav-mapa">
     <div class="map-tools">
+      <label class="chk"><input type="checkbox" id="layerTel" checked> Pluviómetros y ríos medidos (Irrigación)</label>
       <label class="chk"><input type="checkbox" id="layerIR"> Nubes (satélite GOES, 10 min)</label>
       <label class="chk"><input type="checkbox" id="layerIMERG"> Lluvia satelital (NASA IMERG, 30 min)</label>
     </div>
     <div id="map" class="map"></div>
-    <p class="hint">Tocá el mapa para agregar un punto. Colores: lluvia mediana prevista en 72 h. Radar: <a href="https://www.smn.gob.ar/radar" target="_blank" rel="noopener">SMN</a> · <a href="https://www.contingencias.mendoza.gov.ar/" target="_blank" rel="noopener">Contingencias Mendoza</a>.</p>
+    <p class="hint">Tocá el mapa para agregar un punto. Radar: <a href="https://www.smn.gob.ar/radar" target="_blank" rel="noopener">SMN</a> · <a href="https://www.contingencias.mendoza.gov.ar/" target="_blank" rel="noopener">Contingencias Mendoza</a>.</p>
     <div id="mapLegend" class="legend"></div>
   </section>
 
   <!-- 3 · RÍOS Y CORDILLERA -->
   <section id="tab-rios" class="tab" hidden aria-labelledby="nav-rios">
-    <h2 class="sec first">Ríos Diamante y Atuel (30 días)</h2>
+    <h2 class="sec first">Medido ahora en ríos y diques</h2>
+    <div id="riversLive" class="rivers"></div>
+
+    <h2 class="sec">Pronóstico de caudal a 30 días (modelo)</h2>
     <div id="rivers" class="rivers"></div>
     <p class="hint">Modelo GloFAS comparado con su propia historia 1991-2020 para la misma fecha. No es caudal medido.</p>
 

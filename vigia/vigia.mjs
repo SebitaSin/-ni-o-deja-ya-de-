@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from '../js/engine.js';
 import { PRESET_POINTS } from '../js/points.js';
+import * as T from '../js/telemetry.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
@@ -180,6 +181,103 @@ async function registerAndVerify(points) {
   };
 }
 
+// ---------------------------------------------------------------- 6. mediciones en tiempo real
+// Telemetría de Irrigación: guarda historia de 72 h para calcular lluvia por hora y subida de ríos.
+async function telemetry() {
+  const stations = await T.fetchDGI((u, o) => fetch(u, { ...o, headers: { ...(o?.headers || {}), ...UA } }));
+  const prev = await readJSON('telemetria.json', { stations: [] });
+  const hist = Object.fromEntries((prev.stations || []).map((s) => [s.id, s.hist || []]));
+  const keep = stations.filter((s) => s.ageH <= 24 * 30 && s.kind !== 'otro');
+  const out = keep.map((s) => {
+    const h = T.mergeHistory(hist[s.id], s);
+    const r1 = T.rainLast(h, s, 60), r24 = T.rainLast(h, s, 1440);
+    const dq1 = T.changeLast(h, s, 60, 'flow'), dh1 = T.changeLast(h, s, 60, 'height');
+    return {
+      id: s.id, name: s.name, lat: +s.lat.toFixed(4), lon: +s.lon.toFixed(4), kind: s.kind, t: s.t, ok: s.ok, flags: s.flags,
+      v: Object.fromEntries(Object.entries(s.v).filter(([, x]) => x != null).map(([k, x]) => [k, +(+x).toFixed(3)])),
+      rain1h: r1?.mm ?? null, rain24h: r24?.mm ?? null, dFlow1h: dq1 ? +dq1.delta.toFixed(2) : null, dHeight1h: dh1 ? +dh1.delta.toFixed(1) : null,
+      hist: h.map((p) => p.map((x, i) => (i === 0 ? x : x == null ? null : +(+x).toFixed(2)))),
+    };
+  });
+  return { generated: new Date().toISOString(), source: 'Departamento General de Irrigación, telemetría pública', url: T.DGI_URL, stations: out };
+}
+
+// SYNOP horario de San Rafael Aero (87509) vía OGIMET: lluvia medida y tiempo presente (granizo, tormenta)
+const WW = {
+  17: 'tormenta sin lluvia', 27: 'chaparrón de granizo', 29: 'tormenta en la última hora', 60: 'lluvia débil', 61: 'lluvia débil', 62: 'lluvia moderada',
+  63: 'lluvia moderada', 64: 'lluvia fuerte', 65: 'lluvia fuerte', 80: 'chaparrón débil', 81: 'chaparrón fuerte', 82: 'chaparrón violento',
+  87: 'granizo pequeño', 88: 'granizo pequeño', 89: 'granizo', 90: 'granizo', 91: 'lluvia tras tormenta', 92: 'lluvia fuerte tras tormenta',
+  93: 'granizo tras tormenta', 94: 'granizo fuerte tras tormenta', 95: 'tormenta con lluvia', 96: 'tormenta con granizo', 97: 'tormenta fuerte con lluvia',
+  98: 'tormenta con polvo', 99: 'tormenta fuerte con granizo',
+};
+const PERIOD = { 1: 6, 2: 12, 3: 18, 4: 24, 5: 1, 6: 2, 7: 3, 8: 9, 9: 15 };
+function decodeSynop(line) {
+  const f = line.split(',');
+  const t = Date.UTC(+f[1], +f[2] - 1, +f[3], +f[4], +f[5]);
+  const msg = f.slice(6).join(',').replace(/=$/, '').trim();
+  const groups = msg.split(/\s+/);
+  const out = { t, raw: msg, rain: [], ww: null };
+  const i333 = groups.indexOf('333');
+  const sec1 = groups.slice(3, i333 < 0 ? undefined : i333), sec3 = i333 < 0 ? [] : groups.slice(i333 + 1);
+  const rr = (g) => {
+    const RRR = +g.slice(1, 4), tR = +g[4];
+    if (!Number.isFinite(RRR)) return null;
+    const mm = RRR === 990 ? 0.05 : RRR > 990 ? (RRR - 990) / 10 : RRR;
+    return { mm, hours: PERIOD[tR] ?? null };
+  };
+  for (const g of sec1.slice(2)) {
+    if (/^6\d{3}[0-9]$/.test(g)) { const x = rr(g); if (x) out.rain.push(x); }
+    if (/^7\d{4}$/.test(g)) { const ww = +g.slice(1, 3); out.ww = ww; out.wwText = WW[ww] || null; }
+  }
+  for (const g of sec3) if (/^6\d{3}[0-9]$/.test(g)) { const x = rr(g); if (x) out.rain.push(x); }
+  return out;
+}
+async function airport() {
+  const d = new Date(Date.now() - 30 * HOUR);
+  const begin = d.toISOString().slice(0, 13).replace(/[-T]/g, '') + '00';
+  const txt = await (await fetch(`https://www.ogimet.com/cgi-bin/getsynop?block=87509&begin=${begin}`, { headers: UA })).text();
+  const synop = txt.split('\n').filter((l) => /^87509,/.test(l)).map(decodeSynop);
+  let metar = [];
+  try {
+    const m = await (await fetch('https://aviationweather.gov/api/data/metar?ids=SAMR&format=json&hours=12', { headers: UA })).json();
+    metar = (m || []).map((x) => ({ t: x.obsTime * 1000, raw: x.rawOb, wx: x.wxString || null, temp: x.temp, wspd: x.wspd, wgst: x.wgst ?? null }));
+  } catch (e) { log('METAR', e.message); }
+  return { generated: new Date().toISOString(), station: 'San Rafael Aero (87509 / SAMR)', source: 'SMN vía OGIMET (SYNOP) y NOAA aviationweather.gov (METAR)', synop: synop.slice(-30), metar: metar.slice(0, 12) };
+}
+
+// Reportes publicados (no son mediciones): noticias y prensa oficial filtradas por palabras clave.
+const KEYS = /tormenta|granizo|piedra|anegad|anegamiento|inund|crecida|desborde|desbord|arroyo|aluvi|evacuad|corte de luz|sin luz|sin energ|apag[oó]n|corte de agua|sin agua|ruta cortada|calle cortada|corte de ruta|defensa civil|temporal|r[ií]o atuel|r[ií]o diamante|hedionda|el tigre|el salado|zonda|ca[ií]da de [aá]rbol/i;
+const PLACE = /san rafael|sanrafael|sur mendocino|sur provincial|oasis sur|atuel|diamante|valle grande|nihuil|goudge|rama ca[ií]da|cuadro|ca[ñn]ada seca|monte com[aá]n|villa atuel|real del padre|las paredes|salto de las rosas|las malvinas|jaime prats|25 de mayo/i;
+const FEEDS = [
+  { name: 'Google Noticias', url: 'https://news.google.com/rss/search?q=%22San+Rafael%22+Mendoza+(tormenta+OR+granizo+OR+anegamiento+OR+inundaci%C3%B3n+OR+crecida+OR+arroyo+OR+%22corte+de+luz%22+OR+%22sin+luz%22+OR+evacuados+OR+%22Defensa+Civil%22)+when:3d&hl=es-419&gl=AR&ceid=AR:es-419', needPlace: true, titleOnly: true },
+  { name: 'Municipalidad de San Rafael', url: 'https://www.sanrafael.gov.ar/feed/', needPlace: false },
+  { name: 'Gobierno de Mendoza (prensa)', url: 'https://www.mendoza.gov.ar/prensa/feed/', needPlace: true },
+  { name: 'Diario San Rafael', url: 'https://diariosanrafael.com.ar/feed/', needPlace: false },
+];
+async function reports() {
+  const items = [];
+  for (const f of FEEDS) {
+    try {
+      const x = await (await fetch(f.url, { headers: UA })).text();
+      for (const it of x.split(/<item>/).slice(1)) {
+        const title = decode(tag(it, 'title').replace(/<!\[CDATA\[|\]\]>/g, ''));
+        const link = decode(tag(it, 'link'));
+        const date = Date.parse(tag(it, 'pubDate'));
+        const desc = decode(tag(it, 'description').replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, ' ')).slice(0, 400);
+        const text = `${title} ${desc}`;
+        if (!Number.isFinite(date) || Date.now() - date > 72 * HOUR) continue;
+        if (!KEYS.test(text)) continue;
+        if (f.needPlace && !(f.titleOnly ? (PLACE.test(title) || /mendoza/i.test(title)) : PLACE.test(text))) continue;
+        if (f.titleOnly && !KEYS.test(title)) continue;
+        items.push({ source: f.name, title, link, date, keys: [...new Set((text.match(new RegExp(KEYS.source, 'gi')) || []).map((k) => k.toLowerCase()))].slice(0, 5) });
+      }
+    } catch (e) { log('feed', f.name, e.message); }
+  }
+  const seen = new Set();
+  const uniq = items.sort((a, b) => b.date - a.date).filter((i) => { const k = i.title.toLowerCase().slice(0, 70); if (seen.has(k)) return false; seen.add(k); return true; });
+  return { generated: new Date().toISOString(), note: 'Reportes publicados por medios y organismos. No son mediciones.', items: uniq.slice(0, 40) };
+}
+
 // ---------------------------------------------------------------- principal
 async function main() {
   await fs.mkdir(DATA, { recursive: true });
@@ -192,6 +290,12 @@ async function main() {
   const smn = await run('smn', () => smnAlerts());
   const ens = await run('enso', async () => enso(await readJSON('enso.json', null)));
   const verif = await run('verificación', () => registerAndVerify(points));
+  const tel = await run('telemetría', () => telemetry());
+  const aero = await run('aeropuerto', () => airport());
+  const rep = await run('reportes', () => reports());
+  if (tel) await writeJSON('telemetria.json', tel);
+  if (aero) await writeJSON('aeropuerto.json', aero);
+  if (rep) await writeJSON('reportes.json', rep);
 
   if (smn) await writeJSON('smn_alertas.json', smn);
   if (ens) await writeJSON('enso.json', ens);
@@ -224,10 +328,29 @@ async function main() {
     await run('ntfy', () => ntfy({ title: `Alerta oficial SMN: ${a.event}`, message: `Afecta: ${names}. Desde ${a.onset} hasta ${a.expires}. ${a.description}`.slice(0, 900), priority: 4, tags: ['loudspeaker'] }));
     sent.smn.push(a.id);
   }
+  for (const p of PRESET_POINTS.filter((x) => WATCH.includes(x.id))) {
+    const near = (tel?.stations || []).filter((st) => st.kind === 'pluvio' && st.ok && st.rain1h != null && T.distanceKm(p, st) <= 12);
+    const top = near.sort((a, b) => b.rain1h - a.rain1h)[0];
+    const k = 'medido:' + p.id;
+    if (top && top.rain1h >= 10 && ageOf(sent.levels[k + ':t']) > 3 * HOUR) {
+      await run('ntfy', () => ntfy({ title: `Lluvia medida fuerte · ${p.name}`, message: `${top.rain1h} mm en la última hora en el pluviómetro ${top.name} (a ${T.distanceKm(p, top).toFixed(1)} km). Dato de Irrigación.`, priority: 4, tags: ['cloud_with_rain'] }));
+      sent.levels[k + ':t'] = new Date().toISOString();
+    }
+  }
+  const up = (tel?.stations || []).find((st) => /atuel - 1 puente sosneado|puente sosneado - ruta 40/i.test(st.name) || st.id === '8056');
+  if (up && up.ok && up.dHeight1h != null && up.dHeight1h >= 30 && ageOf(sent.levels['sosneado:t']) > 3 * HOUR) {
+    await run('ntfy', () => ntfy({ title: 'Subida rápida del Atuel en Puente Sosneado', message: `La escala subió ${up.dHeight1h} cm en la última hora (ahora ${up.v.height} cm). Aguas arriba de El Nihuil. Dato de Irrigación.`, priority: 4, tags: ['ocean'] }));
+    sent.levels['sosneado:t'] = new Date().toISOString();
+  }
+  const hail = (aero?.synop || []).filter((o) => Date.now() - o.t < 2 * HOUR && o.ww != null && [27, 87, 88, 89, 90, 93, 94, 96, 99].includes(o.ww));
+  if (hail.length && ageOf(sent.levels['granizo:t']) > 3 * HOUR) {
+    await run('ntfy', () => ntfy({ title: 'Granizo observado en San Rafael Aero', message: `Observación SYNOP: ${hail.at(-1).wwText}. Dato del SMN.`, priority: 4, tags: ['ice_cube'] }));
+    sent.levels['granizo:t'] = new Date().toISOString();
+  }
   sent.smn = sent.smn.slice(-200);
   await writeJSON('avisos.json', sent);
   await writeJSON('state.json', state);
-  log('listo', { puntos: points.length, rios: riv?.length, alertasMendoza: smn?.alerts?.length, errores: errors.length, hora: localHour() });
+  log('listo', { estaciones: tel?.stations?.length, reportes: rep?.items?.length, synop: aero?.synop?.length, puntos: points.length, rios: riv?.length, alertasMendoza: smn?.alerts?.length, errores: errors.length, hora: localHour() });
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

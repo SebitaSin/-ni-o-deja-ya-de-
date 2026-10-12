@@ -1,5 +1,6 @@
 import * as E from './engine.js';
 import { PRESET_POINTS, CONTEXT_FACTS } from './points.js';
+import * as TL from './telemetry.js';
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -21,7 +22,7 @@ const store = {
 };
 
 const MIN = 60000;
-const REFRESH = { point: 15 * MIN, ranking: 30 * MIN, rivers: 180 * MIN, mountain: 60 * MIN, server: 10 * MIN };
+const REFRESH = { tel: 5 * MIN, point: 15 * MIN, ranking: 30 * MIN, rivers: 180 * MIN, mountain: 60 * MIN, server: 10 * MIN };
 
 const S = {
   thresholds: { ...E.DEFAULT_THRESHOLDS, ...store.get('thresholds', {}) },
@@ -294,13 +295,139 @@ async function refreshServer(force = false) {
     }
     return null;
   };
-  const [estado, smn, enso, verif] = await Promise.all([get('estado.json'), get('smn_alertas.json'), get('enso.json'), get('verificacion.json')]);
-  S.server = { estado, smn, enso, verif };
+  const [estado, smn, enso, verif, tel, aero, rep] = await Promise.all([get('estado.json'), get('smn_alertas.json'), get('enso.json'), get('verificacion.json'), get('telemetria.json'), get('aeropuerto.json'), get('reportes.json')]);
+  S.server = { estado, smn, enso, verif, tel, aero, rep };
+  if (tel) mergeServerHistory(tel);
+  if (aero) setSrc('aero', 'ok', `última observación ${ago(Math.max(aero.synop?.at(-1)?.t || 0, aero.metar?.[0]?.t || 0))}`); else setSrc('aero', 'off', 'llega con el vigía');
+  if (rep) setSrc('reportes', 'ok', `${rep.items?.length ?? 0} reportes en 72 h`); else setSrc('reportes', 'off', 'llega con el vigía');
+  renderLive();
   if (estado) setSrc('vigia', Date.now() - Date.parse(estado.generated) < 3 * 3600e3 ? 'ok' : 'warn', `última corrida ${ago(Date.parse(estado.generated))}`);
   else setSrc('vigia', 'off', 'todavía no está instalado');
   if (smn) setSrc('smn', 'ok', `${smn.alerts?.length ?? 0} alertas que tocan Mendoza, ${smn.nationalCount ?? '—'} en el país`); else setSrc('smn', 'off', 'llega con el vigía');
   if (enso) setSrc('enso', 'ok', `semana ${enso.weekly?.at(-1)?.week ?? ''}`); else setSrc('enso', 'off', 'llega con el vigía');
   renderSMN(); renderContext(); renderVerif();
+}
+
+// ---------------------------------------------------------------- mediciones en tiempo real (Irrigación, radar, aeropuerto, reportes)
+// Historia por estación: la del vigía (horaria, 72 h) más las lecturas que toma este dispositivo (cada 5 min, 6 h).
+const HIST = {};
+function mergeServerHistory(tel) {
+  for (const st of tel.stations || []) {
+    const h = HIST[st.id] || [];
+    const seen = new Set(h.map((p) => p[0]));
+    for (const p of st.hist || []) if (!seen.has(p[0])) h.push(p);
+    h.sort((a, b) => a[0] - b[0]);
+    HIST[st.id] = h;
+  }
+}
+function loadLocalHistory() {
+  const loc = store.get('telhist', {});
+  for (const [id, h] of Object.entries(loc)) HIST[id] = (HIST[id] || []).concat(h).sort((a, b) => a[0] - b[0]);
+}
+function saveLocalHistory() {
+  const keep = {};
+  const cut = Date.now() - 6 * 3600e3;
+  for (const st of S.tel?.stations || []) {
+    if (!['pluvio', 'rio', 'agua'].includes(st.kind)) continue;
+    const h = (HIST[st.id] || []).filter((p) => p[0] >= cut);
+    if (h.length) keep[st.id] = h;
+  }
+  store.set('telhist', keep);
+}
+async function refreshTelemetry(force = false) {
+  if (S.busy.tel || (!force && Date.now() - (S.at.tel || 0) < REFRESH.tel)) return;
+  S.busy.tel = true;
+  try {
+    const stations = await TL.fetchDGI();
+    for (const st of stations) HIST[st.id] = TL.mergeHistory(HIST[st.id], st);
+    S.tel = { stations, at: Date.now() };
+    S.at.tel = Date.now();
+    const ok = stations.filter((x) => x.ok).length;
+    setSrc('dgi', 'ok', `${ok} estaciones transmitiendo de ${stations.length} en el sur`);
+    saveLocalHistory();
+  } catch (e) { setSrc('dgi', 'err', e.message); }
+  S.busy.tel = false;
+  renderLive(); if (!$('#tab-rios').hidden) renderRiversLive(); refreshMapMarkers();
+}
+function derived(st) {
+  const h = HIST[st.id] || [];
+  return {
+    r1: TL.rainLast(h, st, 60), r3: TL.rainLast(h, st, 180), r24: TL.rainLast(h, st, 1440),
+    dh1: TL.changeLast(h, st, 60, 'height'), dq1: TL.changeLast(h, st, 60, 'flow'),
+    dh24: TL.changeLast(h, st, 1440, 'height'), dq24: TL.changeLast(h, st, 1440, 'flow'),
+  };
+}
+const mm = (x) => (x == null ? '—' : `${fmt(x.mm, x.mm < 10 ? 1 : 0)} mm`);
+const signed = (x, d = 0) => (x == null ? '—' : `${x > 0 ? '+' : ''}${fmt(x, d)}`);
+function radarBlock() {
+  const t = Math.floor(Date.now() / 120000);
+  const anim = S.radarAnim;
+  return `
+    <figure class="radar">
+      <img id="radarImg" src="${TL.RADAR[anim ? 'animacion' : 'sur']}?t=${t}" alt="Radar meteorológico de Contingencias Climáticas, sur de Mendoza" loading="lazy">
+      <figcaption>
+        <span>Radar de Contingencias Climáticas, sur de Mendoza. ${anim ? 'Animación de la última hora: muestra hacia dónde se mueven las tormentas.' : 'Última imagen; la hora está arriba, en UTC (hora local + 3).'} Naranja y rojo (55 dBZ o más) suele indicar granizo.</span>
+        <span class="radar-acts"><button class="btn small" id="radarToggle">${anim ? 'Ver imagen fija' : 'Ver animación'}</button> <a href="${TL.RADAR.pagina}" target="_blank" rel="noopener">Abrir en Contingencias</a></span>
+      </figcaption>
+    </figure>`;
+}
+function renderLive() {
+  const el = $('#live');
+  if (!el) return;
+  const p = currentPoint();
+  const stations = S.tel?.stations || [];
+  const pl = stations.filter((x) => x.kind === 'pluvio' && x.ok && x.v.rainAcc != null)
+    .map((x) => ({ x, d: TL.distanceKm(p, x), dv: derived(x) })).filter((o) => o.d <= 20).sort((a, b) => a.d - b.d).slice(0, 4);
+  let rain;
+  if (!S.tel) rain = `<p class="hint">${S.src.dgi?.status === 'err' ? 'La telemetría de Irrigación no respondió (' + esc(S.src.dgi.msg) + '). Se reintenta sola.' : 'Consultando pluviómetros de Irrigación…'}</p>`;
+  else if (!pl.length) rain = '<p class="hint">No hay pluviómetros transmitiendo a menos de 20 km de este punto.</p>';
+  else {
+    const wet = pl.some((o) => (o.dv.r1?.mm ?? 0) > 0);
+    rain = `<table class="ev live-t"><tr class="th"><td>Pluviómetro (Irrigación)</td><td>1 h</td><td>24 h</td></tr>${pl.map((o) => `
+      <tr><td>${esc(o.x.name.replace(/^Pluvi[oó]metro\s*-?\s*/i, ''))}<small>${fmt(o.d, 1)} km · dato ${ago(o.x.t)}</small></td>
+      <td class="${(o.dv.r1?.mm ?? 0) >= 10 ? 'hot' : ''}">${mm(o.dv.r1)}</td><td>${mm(o.dv.r24)}</td></tr>`).join('')}</table>
+      <p class="hint">${wet ? 'Está lloviendo cerca según los pluviómetros.' : 'Sin lluvia medida en la última hora.'} "—" = todavía no hay lecturas suficientes para calcularlo; se completa solo.</p>`;
+  }
+  const aero = S.server.aero;
+  let air = '';
+  if (aero) {
+    const m = aero.metar?.[0], o = aero.synop?.at(-1);
+    const r6 = (aero.synop || []).slice().reverse().find((x) => x.rain?.length);
+    const wx = m?.wx ? ` · tiempo presente: ${esc(m.wx)}` : o?.wwText ? ` · ${esc(o.wwText)}` : '';
+    air = `<p class="air"><b>San Rafael Aero</b> (SMN), ${m ? hhmm(m.t) : o ? hhmm(o.t) : '—'}: ${m ? `${fmt(m.temp)} °C, viento ${fmt(m.wspd * 1.852)} km/h${m.wgst ? ', ráfagas ' + fmt(m.wgst * 1.852) + ' km/h' : ''}` : ''}${wx}${r6 ? ` · lluvia informada: ${r6.rain.map((r) => `${fmt(r.mm, r.mm < 1 ? 1 : 0)} mm en ${r.hours} h`).join(', ')} (${hhmm(r6.t)})` : ''}.</p>`;
+  }
+  const reps = (S.server.rep?.items || []).slice(0, 4);
+  const repHtml = reps.length ? `<h3 class="sub-h">Reportes publicados (no son mediciones)</h3><ul class="reps">${reps.map((r) => `<li><a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title)}</a><small>${esc(r.source)} · ${ago(r.date)}</small></li>`).join('')}</ul>` : '';
+  el.innerHTML = `<h2 class="sec first-live">Medido ahora</h2>${rain}${air}${radarBlock()}${repHtml}`;
+  $('#radarToggle')?.addEventListener('click', () => { S.radarAnim = !S.radarAnim; renderLive(); });
+  const img = $('#radarImg');
+  if (img) { img.onload = () => setSrc('radar', 'ok', 'imagen cargada'); img.onerror = () => setSrc('radar', 'err', 'la imagen no cargó'); }
+}
+function spark(h, idx, w = 120, hgt = 28) {
+  const pts = h.filter((p) => p[idx] != null && p[0] >= Date.now() - 24 * 3600e3);
+  if (pts.length < 3) return '';
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[idx]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const X = (x) => ((x - x0) / Math.max(1, x1 - x0)) * (w - 4) + 2, Y = (y) => hgt - 3 - ((y - y0) / Math.max(1e-6, y1 - y0)) * (hgt - 6);
+  return `<svg class="spark" viewBox="0 0 ${w} ${hgt}" aria-hidden="true"><path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${X(p[0]).toFixed(1)},${Y(p[idx]).toFixed(1)}`).join('')}"/></svg>`;
+}
+function renderRiversLive() {
+  const el = $('#riversLive');
+  if (!el) return;
+  const stations = S.tel?.stations;
+  if (!stations) { el.innerHTML = `<p class="hint">${S.src.dgi?.status === 'err' ? 'Irrigación no respondió. Se reintenta sola.' : 'Consultando escalas de Irrigación…'}</p>`; return; }
+  const rows = TL.RIVER_ORDER.map((o) => ({ o, st: stations.find((x) => o.match.test(x.name)) })).filter((r) => r.st);
+  el.innerHTML = rows.map(({ o, st }) => {
+    const dv = derived(st), h = HIST[st.id] || [];
+    const lv = !st.ok ? 0 : (dv.dh1?.delta ?? 0) >= 30 || (dv.dq1 && dv.dq1.from > 0 && dv.dq1.delta / dv.dq1.from >= 0.3) ? 2 : 1;
+    return `<div class="card lv-${lv}">
+      <h3><span>${esc(o.label)}</span><span class="sub">${st.ok ? 'dato ' + ago(st.t) : 'sin transmitir'}</span></h3>
+      <p class="riv-v"><b>${st.v.flow != null ? fmt(st.v.flow, 1) + ' m³/s' : '—'}</b>${st.v.height != null ? ` · escala ${fmt(st.v.height)} cm` : ''}
+        <span class="chg">1 h: ${dv.dq1 ? signed(dv.dq1.delta, 1) + ' m³/s' : dv.dh1 ? signed(dv.dh1.delta) + ' cm' : '—'} · 24 h: ${dv.dq24 ? signed(dv.dq24.delta, 1) + ' m³/s' : dv.dh24 ? signed(dv.dh24.delta) + ' cm' : '—'}</span></p>
+      ${spark(h, st.v.flow != null ? 3 : 2)}
+      ${o.note ? `<p class="sub">${esc(o.note)}</p>` : ''}${st.flags.length ? `<p class="flag">${esc(st.flags.join('; '))}</p>` : ''}
+    </div>`;
+  }).join('') + `<p class="hint">Medición de Irrigación cada 1 a 15 minutos. Sin validar: un valor raro puede ser falla del sensor.</p>`;
 }
 
 // ---------------------------------------------------------------- render: encabezado
@@ -358,6 +485,7 @@ function renderAhora(offline = false) {
   $('#changes').innerHTML = (S.changes || []).map((c) => `<li>${esc(c)}</li>`).join('');
   renderRanking();
   renderSMN();
+  renderLive();
 }
 
 function renderRainChart() {
@@ -439,7 +567,7 @@ function renderSMN() {
 }
 
 // ---------------------------------------------------------------- render: mapa
-let map, markers = {}, liveMarker, liveCircle, irLayer, imergLayer, riverLayer;
+let map, markers = {}, liveMarker, liveCircle, irLayer, imergLayer, riverLayer, telLayer;
 function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
 function initMap() {
   if (S.mapReady || typeof L === 'undefined') return;
@@ -453,6 +581,8 @@ function initMap() {
   $('#layerIR').addEventListener('change', (e) => (e.target.checked ? irLayer.addTo(map) : irLayer.remove()));
   $('#layerIMERG').addEventListener('change', (e) => (e.target.checked ? imergLayer.addTo(map) : imergLayer.remove()));
   riverLayer = L.layerGroup().addTo(map);
+  telLayer = L.layerGroup().addTo(map);
+  $('#layerTel').addEventListener('change', (e) => (e.target.checked ? telLayer.addTo(map) : telLayer.remove()));
   map.on('click', (e) => {
     const { lat, lng } = e.latlng;
     L.popup().setLatLng(e.latlng).setContent(`
@@ -503,7 +633,16 @@ function refreshMapMarkers() {
     L.rectangle([[c.lat - 0.025, c.lon - 0.025], [c.lat + 0.025, c.lon + 0.025]], { color: col, weight: 2, fillOpacity: 0.15 })
       .bindPopup(`<b>${esc(c.name)}</b><br>${rv ? esc(rv.headline) : 'Sin datos de caudal'}<br><span style="font-size:12px">Celda GloFAS 5 km</span>`).addTo(riverLayer);
   }
-  $('#mapLegend').innerHTML = `<span><i style="background:${css('--muted')}"></i>&lt; 5 mm</span><span><i style="background:${css('--bar')}"></i>5–20</span><span><i style="background:${css('--watch')}"></i>20–40</span><span><i style="background:${css('--alert')}"></i>≥ 40</span><span>▢ tramo de río</span><span>◎ vos</span>`;
+  telLayer.clearLayers();
+  for (const st of (S.tel?.stations || []).filter((x) => x.ok && ['pluvio', 'rio', 'agua'].includes(x.kind))) {
+    const dv = derived(st);
+    const isP = st.kind === 'pluvio';
+    const r1 = dv.r1?.mm;
+    const col = isP ? (r1 == null ? css('--nodata') : r1 >= 10 ? css('--alert') : r1 >= 2 ? css('--watch') : r1 > 0 ? css('--bar') : css('--surface')) : css('--accent');
+    L.circleMarker([st.lat, st.lon], { radius: isP ? 6 : 7, color: isP ? css('--ink') : css('--accent'), weight: isP ? 1.5 : 3, fillColor: col, fillOpacity: isP ? 0.9 : 0.25, dashArray: isP ? null : '3 2' })
+      .bindPopup(`<b>${esc(st.name)}</b><br>${isP ? `Lluvia última hora: ${mm(dv.r1)} · 24 h: ${mm(dv.r24)}` : `${st.v.flow != null ? fmt(st.v.flow, 1) + ' m³/s · ' : ''}${st.v.height != null ? 'escala ' + fmt(st.v.height) + ' cm' : ''}<br>Cambio 1 h: ${dv.dq1 ? signed(dv.dq1.delta, 1) + ' m³/s' : dv.dh1 ? signed(dv.dh1.delta) + ' cm' : '—'}`}<br><span style="font-size:12px">Irrigación · dato ${ago(st.t)}${st.flags.length ? ' · ' + esc(st.flags.join('; ')) : ''}</span>`).addTo(telLayer);
+  }
+  $('#mapLegend').innerHTML = `<span><i style="background:${css('--surface')};border:1.5px solid ${css('--ink')}"></i>pluviómetro sin lluvia</span><span><i style="background:${css('--watch')}"></i>2–10 mm/h</span><span><i style="background:${css('--alert')}"></i>≥ 10 mm/h</span><span><i style="border:3px dashed ${css('--accent')}"></i>escala de río</span><br>Tus puntos, lluvia prevista 72 h: <span><i style="background:${css('--muted')}"></i>&lt; 5 mm</span><span><i style="background:${css('--bar')}"></i>5–20</span><span><i style="background:${css('--watch')}"></i>20–40</span><span><i style="background:${css('--alert')}"></i>≥ 40</span><span>▢ tramo de río</span><span>◎ vos</span>`;
 }
 function updateLiveOnMap() {
   if (!S.mapReady || !S.live) return;
@@ -592,6 +731,11 @@ const SOURCES = [
   ['imerg', 'Lluvia satelital IMERG', 'NASA, cada 30 minutos, con algunas horas de demora.'],
   ['smn', 'Alertas oficiales SMN', 'Feed CAP del SMN (CC BY 4.0), filtrado por polígono. Lo descarga el vigía.'],
   ['enso', 'El Niño semanal (NOAA CPC)', 'Anomalías Niño 1+2, 3, 3.4 y 4. Lo descarga el vigía.'],
+  ['dgi', 'Telemetría de Irrigación', 'Pluviómetros, escalas de ríos, diques, canales y tomas de agua potable del sur. Datos cada 1 a 15 minutos, sin validar.'],
+  ['radar', 'Radar de Contingencias Climáticas', 'Imagen del sur de Mendoza actualizada varias veces por hora; animación de la última hora.'],
+  ['aero', 'San Rafael Aero (SMN)', 'METAR y SYNOP horarios: tiempo presente (lluvia, tormenta, granizo) y lluvia acumulada. Lo descarga el vigía.'],
+  ['reportes', 'Reportes publicados', 'Noticias y prensa oficial filtradas por anegamientos, crecidas, granizo, cortes de luz o de agua. No son mediciones. Lo descarga el vigía.'],
+  ['cortes', 'Cortes de luz en tiempo real', 'No hay fuente pública: EDEMSA y EPRE no publican un mapa de usuarios sin servicio. Solo llegan como reportes.'],
   ['vigia', 'Vigía en servidor', 'Revisa tus puntos cada hora con la app cerrada y avisa al celular por ntfy.'],
 ];
 function renderSources() {
@@ -730,8 +874,8 @@ function showTab(name) {
     const b = $('#nav-' + t);
     if (t === name) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   }
-  if (name === 'mapa') { initMap(); setTimeout(() => map?.invalidateSize(), 50); }
-  if (name === 'rios') { renderRivers(); renderMountain(); renderContext(); refreshRivers(); refreshMountain(); }
+  if (name === 'mapa') { refreshTelemetry(); initMap(); setTimeout(() => map?.invalidateSize(), 50); }
+  if (name === 'rios') { renderRiversLive(); refreshTelemetry(); renderRivers(); renderMountain(); renderContext(); refreshRivers(); refreshMountain(); }
   if (name === 'fuentes') { renderSources(); renderPerms(); renderPointList(); renderThresholds(); renderVerif(); }
   store.set('tab', name);
   window.scrollTo({ top: 0 });
@@ -775,7 +919,7 @@ async function doInstall() {
 function tick() {
   if (document.hidden) return;
   if (Date.now() - S.at.point > REFRESH.point) refreshPoint();
-  refreshRanking(); refreshServer();
+  refreshRanking(); refreshServer(); refreshTelemetry();
   if (!$('#tab-rios').hidden) { refreshRivers(); refreshMountain(); }
   renderHeader();
 }
@@ -821,7 +965,8 @@ async function boot() {
   showTab(store.get('tab', 'ahora'));
   selectPoint(S.selected, false);
   renderRanking();
-  refreshRanking(true); refreshServer(true);
+  loadLocalHistory();
+  refreshRanking(true); refreshServer(true); refreshTelemetry(true);
   setInterval(tick, MIN);
 }
 
