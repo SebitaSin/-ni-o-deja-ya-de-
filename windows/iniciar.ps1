@@ -3,7 +3,9 @@
 # Si la app ya está abierta, solo abre otra ventana.
 
 $ErrorActionPreference = 'Stop'
-$Log = Join-Path $PSScriptRoot 'iniciar.log'
+$LogDir = Join-Path $env:LOCALAPPDATA 'SanRafaelSentinel'
+if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+$Log = Join-Path $LogDir 'iniciar.log'
 function Write-Log($t) { try { Add-Content -LiteralPath $Log -Value ('{0}  {1}' -f (Get-Date -Format o), $t) } catch { } }
 trap { Write-Log ('ERROR: ' + $_.Exception.Message); continue }
 Write-Log 'inicio'
