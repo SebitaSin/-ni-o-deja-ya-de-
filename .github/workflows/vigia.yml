@@ -1,0 +1,55 @@
+name: Vigía y publicación
+
+on:
+  schedule:
+    - cron: '17 * * * *'   # cada hora (GitHub puede demorar algunos minutos)
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: vigia
+  cancel-in-progress: false
+
+jobs:
+  vigia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Vigía (modelos, ríos, alertas SMN, ENSO, verificación, avisos)
+        run: node vigia/vigia.mjs
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          APP_URL: ${{ vars.APP_URL }}
+          VIGIA_PUNTOS: ${{ vars.VIGIA_PUNTOS }}
+
+      - name: Guardar registro en el repositorio
+        run: |
+          git config user.name "sentinel-vigia"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git diff --cached --quiet || git commit -m "vigía: datos $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push || echo "No se pudo guardar esta vez; la próxima corrida lo reintenta."
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

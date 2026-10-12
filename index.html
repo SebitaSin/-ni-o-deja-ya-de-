@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>San Rafael Sentinel</title>
+<meta name="description" content="Vigilancia meteorológica e hidrológica para San Rafael, Mendoza: lluvia, tormentas, viento, ríos y cordillera, con datos reales y confianza explícita.">
+<meta name="theme-color" content="#0b5f78" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1513" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sentinel">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;600&family=Atkinson+Hyperlegible+Next:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<header class="top">
+  <button id="pointBtn" class="point-btn" aria-haspopup="dialog" aria-controls="pointSheet">
+    <span class="point-label">Punto</span>
+    <span id="pointName" class="point-name">Cargando…</span>
+    <span class="chev" aria-hidden="true">▾</span>
+  </button>
+  <div id="fresh" class="fresh" role="status" aria-live="polite"></div>
+</header>
+
+<main id="main">
+  <!-- 1 · AHORA -->
+  <section id="tab-ahora" class="tab" aria-labelledby="nav-ahora">
+    <div id="smnBanner" class="smn" hidden></div>
+    <div id="verdict" class="verdict lv-0">
+      <p id="verdictText" class="verdict-text">Consultando modelos…</p>
+      <p id="verdictMeta" class="verdict-meta"></p>
+    </div>
+    <div id="hazards" class="hazards"></div>
+
+    <h2 class="sec">Lluvia hora por hora, próximas 72 h</h2>
+    <div id="rainChart" class="chart" role="img" aria-label="Lluvia hora por hora"></div>
+    <p class="hint">Barra: mediana de los modelos. Línea fina: el modelo más seco y el más húmedo.</p>
+
+    <h2 class="sec">Dónde puede llover más (72 h)</h2>
+    <ol id="ranking" class="ranking"></ol>
+    <p class="hint">Modelos de 9 a 25 km: comparan sectores, no cuadras.</p>
+
+    <h2 class="sec">Próximos 15 días</h2>
+    <div id="outlook" class="outlook"></div>
+    <p id="outlookNote" class="hint"></p>
+
+    <h2 class="sec">Qué cambió desde la última vez</h2>
+    <ul id="changes" class="changes"></ul>
+  </section>
+
+  <!-- 2 · MAPA -->
+  <section id="tab-mapa" class="tab" hidden aria-labelledby="nav-mapa">
+    <div class="map-tools">
+      <label class="chk"><input type="checkbox" id="layerIR"> Nubes (satélite GOES, 10 min)</label>
+      <label class="chk"><input type="checkbox" id="layerIMERG"> Lluvia satelital (NASA IMERG, 30 min)</label>
+    </div>
+    <div id="map" class="map"></div>
+    <p class="hint">Tocá el mapa para agregar un punto. Colores: lluvia mediana prevista en 72 h. Radar: <a href="https://www.smn.gob.ar/radar" target="_blank" rel="noopener">SMN</a> · <a href="https://www.contingencias.mendoza.gov.ar/" target="_blank" rel="noopener">Contingencias Mendoza</a>.</p>
+    <div id="mapLegend" class="legend"></div>
+  </section>
+
+  <!-- 3 · RÍOS Y CORDILLERA -->
+  <section id="tab-rios" class="tab" hidden aria-labelledby="nav-rios">
+    <h2 class="sec first">Ríos Diamante y Atuel (30 días)</h2>
+    <div id="rivers" class="rivers"></div>
+    <p class="hint">Modelo GloFAS comparado con su propia historia 1991-2020 para la misma fecha. No es caudal medido.</p>
+
+    <h2 class="sec">Cordillera, próximas 72 h</h2>
+    <div id="mountain" class="mountain"></div>
+
+    <h2 class="sec">Contexto de la temporada</h2>
+    <div id="context" class="context"></div>
+  </section>
+
+  <!-- 4 · FUENTES Y AJUSTES -->
+  <section id="tab-fuentes" class="tab" hidden aria-labelledby="nav-fuentes">
+    <h2 class="sec first">Estado de las fuentes</h2>
+    <ul id="sources" class="sources"></ul>
+
+    <h2 class="sec">Permisos de este dispositivo</h2>
+    <div id="perms" class="perms"></div>
+
+    <h2 class="sec">Mis puntos</h2>
+    <div class="add-point">
+      <input id="newName" type="text" placeholder="Nombre del punto" autocomplete="off">
+      <div class="row2">
+        <input id="newLat" type="text" inputmode="decimal" placeholder="Latitud (−34,61)">
+        <input id="newLon" type="text" inputmode="decimal" placeholder="Longitud (−68,33)">
+      </div>
+      <div class="row2">
+        <button id="addHere" class="btn">Usar mi ubicación</button>
+        <button id="addCoords" class="btn primary">Agregar punto</button>
+      </div>
+      <p id="addMsg" class="hint" role="status"></p>
+    </div>
+    <ul id="pointList" class="point-list"></ul>
+
+    <h2 class="sec">Umbrales de aviso</h2>
+    <form id="thForm" class="thresholds"></form>
+
+    <h2 class="sec">Registro y verificación</h2>
+    <div id="verif" class="verif"></div>
+
+    <h2 class="sec">Qué es y qué no es</h2>
+    <div class="about">
+      <p>Los niveles de esta app son <strong>avisos preventivos calculados</strong> a partir de modelos. No son alertas oficiales ni emergencias confirmadas. Las alertas oficiales del SMN se muestran aparte, con su sello.</p>
+      <p>Ante una emergencia: <strong>911</strong>.</p>
+      <p>Datos: Open-Meteo (ECMWF, NOAA, DWD, ECCC, UKMO, Météo-France, CMA, JMA, GloFAS/Copernicus, ERA5), NASA GIBS, SMN (CC BY 4.0), NOAA CPC, OpenStreetMap, GeoNames. Uso no comercial.</p>
+    </div>
+  </section>
+</main>
+
+<nav class="nav" aria-label="Secciones">
+  <button id="nav-ahora" class="nav-btn" data-tab="ahora" aria-current="page"><span class="nav-ico" aria-hidden="true">◉</span>Ahora</button>
+  <button id="nav-mapa" class="nav-btn" data-tab="mapa"><span class="nav-ico" aria-hidden="true">⌖</span>Mapa</button>
+  <button id="nav-rios" class="nav-btn" data-tab="rios"><span class="nav-ico" aria-hidden="true">≈</span>Ríos</button>
+  <button id="nav-fuentes" class="nav-btn" data-tab="fuentes"><span class="nav-ico" aria-hidden="true">≡</span>Fuentes</button>
+</nav>
+
+<!-- Selector de punto -->
+<div id="pointSheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="pointSheetTitle" hidden>
+  <div class="sheet-body">
+    <div class="sheet-head">
+      <h2 id="pointSheetTitle">Elegí un punto</h2>
+      <button class="x" data-close="pointSheet" aria-label="Cerrar">✕</button>
+    </div>
+    <div id="pointChoices" class="point-choices"></div>
+  </div>
+</div>
+
+<!-- Primer uso: permisos -->
+<div id="onboard" class="sheet onboard" role="dialog" aria-modal="true" aria-labelledby="obTitle" hidden>
+  <div class="sheet-body">
+    <p class="ob-kicker">San Rafael Sentinel</p>
+    <h2 id="obTitle">Vigilancia del tiempo, los ríos y la cordillera para San Rafael</h2>
+    <ol class="ob-steps">
+      <li>
+        <h3>Ubicación en tiempo real</h3>
+        <p>Para decirte qué puede pasar donde estás. Se usa mientras la app está abierta y no sale de tu dispositivo: solo se pide el pronóstico para tu coordenada redondeada a 1 km.</p>
+        <button id="obLoc" class="btn primary">Permitir ubicación</button>
+        <span id="obLocState" class="ob-state" role="status"></span>
+      </li>
+      <li>
+        <h3>Avisos en este dispositivo</h3>
+        <p>Te avisa cuando un punto pasa a Atención o Alerta mientras la app está abierta o en segundo plano.</p>
+        <button id="obNotif" class="btn">Activar avisos</button>
+        <span id="obNotifState" class="ob-state" role="status"></span>
+      </li>
+      <li id="obInstallItem">
+        <h3>Instalar la app</h3>
+        <p id="obInstallText">Queda en la pantalla de inicio y funciona sin conexión con los últimos datos.</p>
+        <button id="obInstall" class="btn" hidden>Instalar</button>
+      </li>
+    </ol>
+    <p class="ob-foot">Ya están cargados 28 puntos: tus 3 direcciones, el Hospital Schestakow, los distritos, embalses y nacientes de los ríos.</p>
+    <button id="obDone" class="btn primary wide">Empezar</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" role="status" aria-live="assertive" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
